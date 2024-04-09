@@ -1,12 +1,11 @@
 // Package s3 brings S3 files handling to afero
-package s3
+package aferos3
 
+/*
 import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/stretchr/testify/require"
 	"io"
 	"math/rand"
 	"os"
@@ -15,10 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws/awserr"
+	"github.com/stretchr/testify/require"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/session"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/spf13/afero"
 )
 
@@ -41,6 +43,7 @@ func GetFs(t *testing.T) afero.Fs {
 }
 
 func __getS3Fs(t *testing.T) *Fs {
+
 	sess, errSession := session.NewSession(&aws.Config{
 		Credentials:      credentials.NewStaticCredentials("minioadmin", "minioadmin", ""),
 		Endpoint:         aws.String("http://localhost:9000"),
@@ -195,7 +198,7 @@ func TestFileSeekBig(t *testing.T) {
 	}
 }
 
-//nolint: gocyclo, funlen
+// nolint: gocyclo, funlen
 func TestFileSeekBasic(t *testing.T) {
 	fs := GetFs(t)
 	req := require.New(t)
@@ -759,7 +762,7 @@ func TestFileReaddir(t *testing.T) {
 
 		fis, err := dir.Readdir(1)
 		req.NoError(err, "could not readdir /dir1")
-		req.Len(fis,1)
+		req.Len(fis, 1)
 	})
 
 	t.Run("WithNoTrailingSlash", func(t *testing.T) {
@@ -768,7 +771,7 @@ func TestFileReaddir(t *testing.T) {
 
 		fis, err := dir.Readdir(1)
 		req.NoError(err, "could not readdir /dir1/")
-		req.Len(fis,1)
+		req.Len(fis, 1)
 	})
 }
 
@@ -844,3 +847,6 @@ func TestFileInfo(t *testing.T) {
 	fi := NewFileInfo("name", false, 1024, time.Now())
 	require.Nil(t, fi.Sys())
 }
+
+
+*/

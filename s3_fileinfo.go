@@ -1,5 +1,5 @@
 // Package s3 brings S3 files handling to afero
-package s3
+package aferos3
 
 import (
 	"os"

@@ -1,7 +1,8 @@
 // Package s3 brings S3 files handling to afero
-package s3
+package aferos3
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -14,9 +15,11 @@ import (
 
 	"github.com/spf13/afero"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	//"github.com/aws/aws-sdk-go/service/s3/s3manager"
+
+	s3manager "github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 // File represents a file in S3.
@@ -75,12 +78,12 @@ func (f *File) Readdir(n int) ([]os.FileInfo, error) {
 	if name != "" && !strings.HasSuffix(name, "/") {
 		name += "/"
 	}
-	output, err := f.fs.s3API.ListObjectsV2(&s3.ListObjectsV2Input{
+	output, err := f.fs.s3API.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
 		ContinuationToken: f.readdirContinuationToken,
 		Bucket:            aws.String(f.fs.bucket),
 		Prefix:            aws.String(name),
 		Delimiter:         aws.String("/"),
-		MaxKeys:           aws.Int64(int64(n)),
+		MaxKeys:           aws.Int32(int32(n)),
 	})
 	if err != nil {
 		return nil, err
@@ -303,12 +306,12 @@ func (f *File) openWriteStream() error {
 
 	f.streamWriteCloseErr = make(chan error)
 	f.streamWrite = writer
-
-	uploader := s3manager.NewUploader(f.fs.session)
-	uploader.Concurrency = 1
+	uploader := s3manager.NewUploader(f.fs.s3API, func(u *s3manager.Uploader) {
+		u.Concurrency = 1
+	})
 
 	go func() {
-		input := &s3manager.UploadInput{
+		input := &s3.PutObjectInput{
 			Bucket: aws.String(f.fs.bucket),
 			Key:    aws.String(f.name),
 			Body:   reader,
@@ -323,7 +326,7 @@ func (f *File) openWriteStream() error {
 			input.ContentType = aws.String(mime.TypeByExtension(filepath.Ext(f.name)))
 		}
 
-		_, err := uploader.Upload(input)
+		_, err := uploader.Upload(context.TODO(), input)
 
 		if err != nil {
 			f.streamWriteErr = err
@@ -347,7 +350,7 @@ func (f *File) openReadStream(startAt int64) error {
 		streamRange = aws.String(fmt.Sprintf("bytes=%d-%d", startAt, f.cachedInfo.Size()))
 	}
 
-	resp, err := f.fs.s3API.GetObject(&s3.GetObjectInput{
+	resp, err := f.fs.s3API.GetObject(context.TODO(), &s3.GetObjectInput{
 		Bucket: aws.String(f.fs.bucket),
 		Key:    aws.String(f.name),
 		Range:  streamRange,

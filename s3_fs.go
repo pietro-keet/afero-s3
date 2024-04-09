@@ -1,47 +1,54 @@
 // Package s3 brings S3 files handling to afero
-package s3
+package aferos3
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"mime"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
+
+	// "github.com/aws/aws-sdk-go-v2/aws/awserr"
+	// "github.com/aws/aws-sdk-go-v2/aws/session"
+	// "github.com/aws/aws-sdk-go-v2/service/s3"
+	// "github.com/aws/aws-sdk-go-v2/service/s3/s3manager"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/spf13/afero"
 )
 
 // Fs is an FS object backed by S3.
 type Fs struct {
 	FileProps *UploadedFileProperties // FileProps define the file properties we want to set for all new files
-	session   *session.Session        // Session config
-	s3API     *s3.S3
+	config    aws.Config              // Session config
+	s3API     *s3.Client
 	bucket    string // Bucket name
 }
 
 // UploadedFileProperties defines all the set properties applied to future files
 type UploadedFileProperties struct {
-	ACL          *string // ACL defines the right to apply
-	CacheControl *string // CacheControl defines the Cache-Control header
-	ContentType  *string // ContentType define the Content-Type header
+	ACL          *types.ObjectCannedACL // ACL defines the right to apply
+	CacheControl *string                // CacheControl defines the Cache-Control header
+	ContentType  *string                // ContentType define the Content-Type header
 }
 
 // NewFs creates a new Fs object writing files to a given S3 bucket.
-func NewFs(bucket string, session *session.Session) *Fs {
-	s3Api := s3.New(session)
+func NewFs(bucket string, config aws.Config) *Fs {
+	s3Api := s3.NewFromConfig(config)
 	return &Fs{
-		bucket:  bucket,
-		session: session,
-		s3API:   s3Api,
+		bucket: bucket,
+		config: config,
+		s3API:  s3Api,
 	}
 }
 
@@ -78,7 +85,7 @@ func (fs Fs) Create(name string) (afero.File, error) {
 			req.ContentType = aws.String(mime.TypeByExtension(filepath.Ext(name)))
 		}
 
-		_, errPut := fs.s3API.PutObject(req)
+		_, errPut := fs.s3API.PutObject(context.TODO(), req)
 		if errPut != nil {
 			return nil, errPut
 		}
@@ -92,10 +99,12 @@ func (fs Fs) Create(name string) (afero.File, error) {
 	// Create(), like all of S3, is eventually consistent.
 	// To protect against unexpected behavior, have this method
 	// wait until S3 reports the object exists.
-	return file, fs.s3API.WaitUntilObjectExists(&s3.HeadObjectInput{
+	waiter := s3.NewObjectExistsWaiter(fs.s3API)
+
+	return file, waiter.Wait(context.TODO(), &s3.HeadObjectInput{
 		Bucket: aws.String(fs.bucket),
 		Key:    aws.String(name),
-	})
+	}, 30*time.Second)
 }
 
 // Mkdir makes a directory in S3.
@@ -168,10 +177,11 @@ func (fs Fs) Remove(name string) error {
 
 // forceRemove doesn't error if a file does not exist.
 func (fs Fs) forceRemove(name string) error {
-	_, err := fs.s3API.DeleteObject(&s3.DeleteObjectInput{
-		Bucket: aws.String(fs.bucket),
-		Key:    aws.String(name),
-	})
+	_, err := fs.s3API.DeleteObject(context.TODO(),
+		&s3.DeleteObjectInput{
+			Bucket: aws.String(fs.bucket),
+			Key:    aws.String(name),
+		})
 	return err
 }
 
@@ -209,7 +219,7 @@ func (fs Fs) Rename(oldname, newname string) error {
 	if oldname == newname {
 		return nil
 	}
-	_, err := fs.s3API.CopyObject(&s3.CopyObjectInput{
+	_, err := fs.s3API.CopyObject(context.TODO(), &s3.CopyObjectInput{
 		Bucket:     aws.String(fs.bucket),
 		CopySource: aws.String(fs.bucket + oldname),
 		Key:        aws.String(newname),
@@ -217,7 +227,7 @@ func (fs Fs) Rename(oldname, newname string) error {
 	if err != nil {
 		return err
 	}
-	_, err = fs.s3API.DeleteObject(&s3.DeleteObjectInput{
+	_, err = fs.s3API.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
 		Bucket: aws.String(fs.bucket),
 		Key:    aws.String(oldname),
 	})
@@ -227,16 +237,20 @@ func (fs Fs) Rename(oldname, newname string) error {
 // Stat returns a FileInfo describing the named file.
 // If there is an error, it will be of type *os.PathError.
 func (fs Fs) Stat(name string) (os.FileInfo, error) {
-	out, err := fs.s3API.HeadObject(&s3.HeadObjectInput{
+	out, err := fs.s3API.HeadObject(context.TODO(), &s3.HeadObjectInput{
 		Bucket: aws.String(fs.bucket),
 		Key:    aws.String(name),
 	})
 	if err != nil {
-		var errRequestFailure awserr.RequestFailure
-		if errors.As(err, &errRequestFailure) {
-			if errRequestFailure.StatusCode() == 404 {
-				statDir, errStat := fs.statDirectory(name)
-				return statDir, errStat
+		// got solution from here https://github.com/aws/aws-sdk-go-v2/issues/1110
+
+		if opErr, ok := err.(*smithy.OperationError); ok {
+			if httpErr, ok := opErr.Err.(*awshttp.ResponseError); ok {
+				if httpErr.HTTPStatusCode() == http.StatusNotFound {
+					// file not found
+					statDir, errStat := fs.statDirectory(name)
+					return statDir, errStat
+				}
 			}
 		}
 		return FileInfo{}, &os.PathError{
@@ -260,10 +274,10 @@ func (fs Fs) Stat(name string) (os.FileInfo, error) {
 
 func (fs Fs) statDirectory(name string) (os.FileInfo, error) {
 	nameClean := path.Clean(name)
-	out, err := fs.s3API.ListObjectsV2(&s3.ListObjectsV2Input{
+	out, err := fs.s3API.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
 		Bucket:  aws.String(fs.bucket),
 		Prefix:  aws.String(strings.TrimPrefix(nameClean, "/")),
-		MaxKeys: aws.Int64(1),
+		MaxKeys: aws.Int32(1),
 	})
 	if err != nil {
 		return FileInfo{}, &os.PathError{
@@ -284,24 +298,27 @@ func (fs Fs) statDirectory(name string) (os.FileInfo, error) {
 
 // Chmod doesn't exists in S3 but could be implemented by analyzing ACLs
 func (fs Fs) Chmod(name string, mode os.FileMode) error {
-	var acl string
+	var acl types.ObjectCannedACL
 
 	otherRead := mode&(1<<2) != 0
 	otherWrite := mode&(1<<1) != 0
 
 	switch {
 	case otherRead && otherWrite:
-		acl = "public-read-write"
+		acl = types.ObjectCannedACLPublicReadWrite
+		//"public-read-write"
 	case otherRead:
-		acl = "public-read"
+		acl = types.ObjectCannedACLPublicRead
+		// "public-read"
 	default:
-		acl = "private"
+		acl = types.ObjectCannedACLPrivate
+		//"private"
 	}
 
-	_, err := fs.s3API.PutObjectAcl(&s3.PutObjectAclInput{
+	_, err := fs.s3API.PutObjectAcl(context.TODO(), &s3.PutObjectAclInput{
 		Bucket: aws.String(fs.bucket),
 		Key:    aws.String(name),
-		ACL:    aws.String(acl),
+		ACL:    acl,
 	})
 	return err
 }
@@ -321,7 +338,7 @@ func (Fs) Chtimes(string, time.Time, time.Time) error {
 // very similar structures.
 func applyFileCreateProps(req *s3.PutObjectInput, p *UploadedFileProperties) {
 	if p.ACL != nil {
-		req.ACL = p.ACL
+		req.ACL = *p.ACL
 	}
 
 	if p.CacheControl != nil {
@@ -333,9 +350,9 @@ func applyFileCreateProps(req *s3.PutObjectInput, p *UploadedFileProperties) {
 	}
 }
 
-func applyFileWriteProps(req *s3manager.UploadInput, p *UploadedFileProperties) {
+func applyFileWriteProps(req *s3.PutObjectInput, p *UploadedFileProperties) {
 	if p.ACL != nil {
-		req.ACL = p.ACL
+		req.ACL = *p.ACL
 	}
 
 	if p.CacheControl != nil {
