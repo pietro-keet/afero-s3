@@ -19,10 +19,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
-	// "github.com/aws/aws-sdk-go-v2/aws/awserr"
-	// "github.com/aws/aws-sdk-go-v2/aws/session"
-	// "github.com/aws/aws-sdk-go-v2/service/s3"
-	// "github.com/aws/aws-sdk-go-v2/service/s3/s3manager"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/spf13/afero"
 )
